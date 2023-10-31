@@ -66,8 +66,7 @@ def segment_text(sentence, marker):
     '''
     assert len(sentence) == len(marker)
     
-    seg_s = '！？。…；：!?'
-    re = []
+    seg_s = '！？。…；：!?，'  #加不加逗号，意味着分句是否足够细
     flag = False
     for item in seg_s:
         idx = sentence.find(item)
@@ -80,21 +79,8 @@ def segment_text(sentence, marker):
         if len(sentence) != 0:
             return [(sentence, marker)]
         else:
-            return [] 
-    
-    # 第一级分割
-    sentences_level1 = re.split(r'[?！。…]', sentence)
-    sentences = []
+            return []
 
-    for sentence in sentences_level1:
-        # 第二级分割
-        sentences_level2 = re.split(r'[；：]', sentence)
-        for sentence_level2 in sentences_level2:
-            # 第三级分割
-            sentences_level3 = re.split(r'[,\s"]', sentence_level2)
-            sentences.extend([s.strip() for s in sentences_level3 if s.strip()])
-
-    return sentences
 
 
 
@@ -194,8 +180,7 @@ if __name__ == "__main__":
         
         
     for key, v in marker_counter.items():
-        if key[0] in ('O', 'B', 'E'):
-            print(key, v)
+        print(key, v)
     
     #for key, v in sentence_len_counter.items():
      #   print(key, v)

@@ -178,7 +178,7 @@ class CRF(nn.Module):
 
         for t, (_h, _mask) in enumerate(zip(h[:-1], mask[:-1])):
             #_emit = torch.cat([_h[_y0] for _h, _y0 in zip(_h, y0[t])])  # shape [Batch]
-            _emit = -self.crossEntropy(_h.squeeze(2), y0[t])
+            _emit = 0# -self.crossEntropy(_h.squeeze(2), y0[t])
             _trans = torch.cat([trans[x] for x in zip(y0[t + 1], y0[t])])  # shape [B]
             # _mask shape [B]
             S += (_emit + _trans) * _mask
@@ -218,13 +218,13 @@ class CRF(nn.Module):
     def decode(self, h, mask): # Viterbi decoding
         #print(h.mean())
         h = self.sigmoid(h)  # lstm 的输出需要一个激活函数，所以在这
-        # h [t, batch, ]
-        # 
+        # h [t, batch, C]
+        # mask [L, B]
         bptr = torch.LongTensor()
         score = torch.Tensor(h.size(1), self.num_tags).fill_(-10000)  # [batchSize, tags]
         score[:, SOS_IDX] = 0.
         for _h, _mask in zip(h, mask):  # iter per t, iter mask 
-            _mask = _mask.unsqueeze(1)
+            _mask = _mask.unsqueeze(1) # [B, 1]
             _score = score.unsqueeze(1) + self.trans # [B, 1, C] -> [B, C, C]
             _score, _bptr = _score.max(2) # best previous scores and tags
             _score += _h # add emission scores
@@ -270,19 +270,15 @@ class CNN_BiLSTM_CRF(nn.Module):
         super(CNN_BiLSTM_CRF, self).__init__()
         self.embedding_dim = embedding_dim
         self.hidden_dim = hidden_dim
+        
         # tag转化的函数和方法
         self.tagset_size = len(tagdic)
 
-        # 数据转化
-        #self.dataTransformer = DataTransformer(tagdic)
         # CNN
         self.cnns = [nn.Conv2d(1, 34, (3, 100), padding=(3//2, 0), stride=1, bias=True, device=DEVICE),
                      nn.Conv2d(1, 33, (5, 100), padding=(5//2, 0), stride=1, bias=True, device=DEVICE),
                      nn.Conv2d(1, 33, (7, 100), padding=(7//2, 0), stride=1, bias=True, device=DEVICE)]
-        for net in self.cnns:
-            nn.init.xavier_uniform_(net.weight)
-            nn.init.zeros_(net.bias)
-            
+
         # RELU
         self.relu = nn.ReLU()
         # sigmoid
@@ -295,6 +291,24 @@ class CNN_BiLSTM_CRF(nn.Module):
             bias=True, batch_first=False,
             bidirectional=True, device=DEVICE
         )
+
+        # 线性层得到预测
+        self.hidden2tag = nn.Linear(hidden_dim*2, self.tagset_size)
+        
+        # crf layer
+        self.crf = CRF(self.tagset_size)
+        
+        # drop out layer
+        self.dropout = nn.Dropout(p=0.5)
+
+
+
+
+        for net in self.cnns:
+            nn.init.xavier_uniform_(net.weight)
+            nn.init.zeros_(net.bias)
+                    
+        
         for name, param in self.lstm.named_parameters():
             if 'weight_ih' in name:
                 torch.nn.init.xavier_uniform_(param.data)
@@ -302,22 +316,12 @@ class CNN_BiLSTM_CRF(nn.Module):
                 torch.nn.init.xavier_uniform_(param.data)
             elif 'bias' in name:
                 param.data.fill_(0.01)
+                
 
-        # Maps the output of the LSTM into tag space.
-        self.hidden2tag = nn.Linear(hidden_dim*2, self.tagset_size)
+
         nn.init.xavier_uniform_(self.hidden2tag.weight, gain=nn.init.calculate_gain('sigmoid'))
-        nn.init.zeros_(self.hidden2tag.bias)
+        nn.init.zeros_(self.hidden2tag.bias)    
         
-        # crf layer
-        self.crf = CRF(self.tagset_size)
-        self.crf.to(DEVICE)
-        
-        #self.hidden = self.init_hidden()
-        self.dropout = nn.Dropout(p=0.5)
-
-    #def init_hidden(self):
-    #    return (torch.randn(2, 1, self.hidden_dim // 2), torch.randn(2, 1, self.hidden_dim // 2)) # hidden dim 包含了两个方向
-        #return torch.randn()
         
     def _get_lstm_features(self, embeds):
         ''' embeds [seriesLen, batchSize, 100]
