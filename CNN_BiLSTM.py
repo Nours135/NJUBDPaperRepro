@@ -14,7 +14,11 @@ from func4skipgram import Vocab, MyBytes2Int, change_None
 from skipgram_model import EmbeddingModel
 from func4CNN_BiLSTM import *
 
+#DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE = torch.device("cpu")
+print('training on: ', DEVICE)
 
+# 这个版本用crossentrophy loss
 
 class DataReader(tud.Dataset):
     def __init__(self, mode, DataTranser):
@@ -167,11 +171,7 @@ class CRF(nn.Module):
         # h [L, B, C]
         # y0 shape [L, B]
         # mask shape [L, B]
-        
-        #h = self.sigmoid(h) 实测不能要这个，CELoss加了这个后练不动orzzz
-        
-        multiDiceLoss = self.multiDiceLoss(self.sigmoid(h), y0, mask)
-        
+
         S = torch.Tensor(h.size(1)).fill_(0.)  # shape [B]
         h = h.unsqueeze(3) # [L, B, C, 1]
         trans = self.trans.unsqueeze(2) # [C, C, 1]
@@ -188,7 +188,7 @@ class CRF(nn.Module):
         #print(last_tag) # 都是 <eos> 所有取到的是，句子最后一个字符后面的那个那个tag  # shape [batch]
         S += self.trans[PAD_IDX, last_tag] # 原来的代码 S += self.trans[EOS_IDX, last_tag]
         # print(S.shape) [B]
-        return S - multiDiceLoss * 25
+        return S
 
     def partition(self, h, mask):
         #print(h.mean()) 这里看出，LSTM的输出到后面越爆炸，接近-2，这是进一步修改的方向
@@ -257,10 +257,10 @@ class CRF(nn.Module):
         else:
             S = self.score(h, y0, mask)
             #print(S) #[ -6.5933, -14.9031,  -3.2972,  -4.2958,  -0.7219]
-            self.debug_log[0].append(S.mean().item())
+            #self.debug_log[0].append(S.mean().item())
             Z = self.partition(h, mask)  # 为了训练状态转移矩阵
             #print(Z)  #[165.5909, 129.8591, 133.0644, 123.8566, 213.5855]
-            self.debug_log[1].append(Z.mean().item())
+            #self.debug_log[1].append(Z.mean().item())
             loss = torch.mean(Z - S) # NLL loss
     
             return loss, self.decode(h, mask)
@@ -276,9 +276,9 @@ class CNN_BiLSTM_CRF(nn.Module):
         # 数据转化
         #self.dataTransformer = DataTransformer(tagdic)
         # CNN
-        self.cnns = [nn.Conv2d(1, 34, (3, 100), padding=(3//2, 0), stride=1, bias=True),
-                     nn.Conv2d(1, 33, (5, 100), padding=(5//2, 0), stride=1, bias=True),
-                     nn.Conv2d(1, 33, (7, 100), padding=(7//2, 0), stride=1, bias=True)]
+        self.cnns = [nn.Conv2d(1, 34, (3, 100), padding=(3//2, 0), stride=1, bias=True, device=DEVICE),
+                     nn.Conv2d(1, 33, (5, 100), padding=(5//2, 0), stride=1, bias=True, device=DEVICE),
+                     nn.Conv2d(1, 33, (7, 100), padding=(7//2, 0), stride=1, bias=True, device=DEVICE)]
         for net in self.cnns:
             nn.init.xavier_uniform_(net.weight)
             nn.init.zeros_(net.bias)
@@ -293,7 +293,7 @@ class CNN_BiLSTM_CRF(nn.Module):
             hidden_size=hidden_dim,  # 两个方向
             num_layers=1,
             bias=True, batch_first=False,
-            bidirectional=True
+            bidirectional=True, device=DEVICE
         )
         for name, param in self.lstm.named_parameters():
             if 'weight_ih' in name:
@@ -310,6 +310,7 @@ class CNN_BiLSTM_CRF(nn.Module):
         
         # crf layer
         self.crf = CRF(self.tagset_size)
+        self.crf.to(DEVICE)
         
         #self.hidden = self.init_hidden()
         self.dropout = nn.Dropout(p=0.5)
@@ -354,6 +355,15 @@ class CNN_BiLSTM_CRF(nn.Module):
         
         return lstm_feats  # sigmoid操作放在了CRF函数内
 
+
+    #def neg_log_likelihood(self, embeds, tags, masks):
+        # CNN-BiLSTM部分的函数
+     #   feats = self._get_lstm_features(embeds) #[L, B, C]
+        
+        # 传入crf层
+      #  loss, bestpath = self.crf(feats, tags, masks)
+       # return loss, bestpath
+
     def forward(self, embeds, tags, masks):  # dont confuse this with _forward_alg above.
 
         # Get the emission scores from the BiLSTM
@@ -366,21 +376,23 @@ class CNN_BiLSTM_CRF(nn.Module):
 class MultiDiceLoss(nn.Module):
     def __init__(self):
         super(MultiDiceLoss, self).__init__()
-        self.epsilon = 1e-8
-        
+        self.epsilon = 1e-5
+
     def forward(self, predict, target, mask):
         ''' predict [L, B, C] after sigmoid
             target [L, B]
             mask [L, B]
         '''
-        
         mask = mask.unsqueeze(2)  # [L, B, C]
         numclass = predict.size(-1)
-        
+
         target = torch.nn.functional.one_hot(target, numclass) # [L, B, C]
         
         wei = torch.sum(target, axis=[0, 1]) # (n_class,)
-        wei = 1/(wei**2+self.epsilon)  # 平方改为正的
+        wei = 1/(wei+self.epsilon)  # 平方改为正的
+        #pre = torch.sigmoid(predict).view(num, -1)
+        #tar = target.view(num, -1)
+
         
         intersection = (torch.sum(predict * target * mask, axis=[0])*wei).sum(dim=1)  # 内部 是L维度
         union = (torch.sum((predict + target) * mask, axis=[0])*wei).sum(dim=1)  # 外面是在C维度
@@ -390,14 +402,15 @@ class MultiDiceLoss(nn.Module):
 
 
 
+
 if __name__ == '__main__':
     
-    #seprate_data('NERSource/diabetes_washed', [8, 2, 0])
+    #seprate_data('NERSource/diabetes_washed', [7, 2, 1])
     
     batch_size = 200
     lr = 0.001
     attenuation = 0.005
-    epoch = 35
+    epoch = 20
     
     PRINT_EVERY = 50
 
@@ -419,6 +432,7 @@ if __name__ == '__main__':
     def init_para(model):
         pass 
     model = CNN_BiLSTM_CRF(embedding_dim=200, hidden_dim=100, tagdic=tagdic)  
+    #model.to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=0, betas=(0.9, 0.995))  # attenuation = 0.005
     #optimizer = optim.SGD(model.parameters(), lr=lr)
 
@@ -428,13 +442,12 @@ if __name__ == '__main__':
     lossmetrics1 = Accumulator(1)  # 暂时只存train 和 valid loss，后面还要存很多指标
     lossmetrics2 = Accumulator(1)
     train_metric = Accumulator(7)
-    val_metric = Accumulator(7)
     for e in range(epoch):
         steps = 0
         model.train()
         for ebeds, tagIDs, masks in TrainDataloader:
             # 将数据转到显卡上
-            #input_words, target_words, nega_words = input_words.to(DEVICE), target_words.to(DEVICE), nega_words.to(DEVICE)
+            #ebeds, tagIDs, masks = ebeds.to(DEVICE), tagIDs.to(DEVICE), masks.to(DEVICE)
             steps += 1
             
             #计算损失
@@ -456,16 +469,16 @@ if __name__ == '__main__':
 
 
         print(f'epoch {e+1} finished')
-        torch.save(model.state_dict(), f'NERResult/epoch{e+1}_.pth')
+        #torch.save(model.state_dict(), f'models/skipgram_{source}_epoch{e+1}_{str(datetime.date.today())}.pth')
         
         # 验证集
         # 示例预测
         s = random.randint(1, 8)
-        t = random.randint(0, 1)
+        t = random.randint(0, batch_size-5)
         a = 0
         example = []
         
-        
+        val_metric = Accumulator(7)
         model.eval()
         for X, y in ValidSet.dataiter(batch_size):
             embeds, tagIDs, masks = DataTranser.forward(X, y)
@@ -509,116 +522,12 @@ if __name__ == '__main__':
         # 检查BiLSTM的参数
         
         
-        if e%4 == 5:
+        if e%4 == 3:
             print(*zip(*example), sep='\n')
-        
-    
-    
-    # 开始绘制统计图
-    import matplotlib.pyplot as plt
-    plt.rcParams['font.sans-serif']=['SimHei']   # let matplotlib能正常显示中文和负号
-    plt.rcParams['axes.unicode_minus']=False
-    
-    # 1 loss: train and valid set
-    train_loss = [data[0] for data in lossmetrics1.backup]
-    valid_loss = [data[0] for data in lossmetrics2.backup]
-    
-    fig = plt.figure(figsize=(8, 5), dpi=300)
-    # 提取训练集和验证集的loss值
-    # 绘制loss
-    plt.plot(train_loss, label='Training loss')
-    plt.plot(valid_loss, label='Validation loss')
-    # 添加图例
-    plt.legend()
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.title('loss curve')
-    plt.savefig('NERResult/loss_curve.png')
             
-    
-    # 2 predicted count, avg lenth and comlete rate
-    train_count = train_metric.backup[0][0]
-    train_lenth = train_metric.backup[0][1]
-    val_count = val_metric.backup[0][0]
-    val_lenth = val_metric.backup[0][1]
-    
-    train_pred_count = [data[2] for data in train_metric.backup]
-    train_pred_lenth = [data[3] for data in train_metric.backup]
-    valid_pred_count = [data[2] for data in val_metric.backup]
-    valid_pred_lenth = [data[3] for data in val_metric.backup]
-    
-    fig = plt.figure(figsize=(8, 5), dpi=300)
-    # 绘制count的曲线
-    # 添加一条y=0.5的水平虚线
-    plt.axhline(y=train_count, color='b', linestyle='--')
-    plt.axhline(y=val_count, color='r', linestyle='--')
-    plt.plot(train_pred_count, label='training')
-    plt.plot(valid_pred_count, label='validing')
-    # 添加图例
-    plt.legend()
-    plt.xlabel('Epochs')
-    plt.ylabel('predicted entity amount')
-    plt.title('predicted entity amount curve')
-    plt.savefig('NERResult/predicted_entity_amount.png')
-    
-    fig = plt.figure(figsize=(8, 5), dpi=300)
-    # 绘制平均长度的曲线
-    plt.axhline(y=train_lenth, color='b', linestyle='--')
-    plt.axhline(y=val_lenth, color='r', linestyle='--')
-    plt.plot(train_pred_lenth, label='training')
-    plt.plot(valid_pred_lenth, label='validing')
-    # 添加图例
-    plt.legend()
-    plt.xlabel('Epochs')
-    plt.ylabel('predicted entity amount')
-    plt.title('average length of predicted entities')
-    plt.savefig('NERResult/average_length_of_predicted_entities.png')
-    
-    
-    
-    # 3 recall rate, completeright
-    train_recal_half = [data[6]/data[0] for data in train_metric.backup]
-    train_recal_complete = [data[5]/data[0] for data in train_metric.backup]
-    valid_recal_half = [data[6]/data[0] for data in val_metric.backup]
-    valid_recal_complete = [data[5]/data[0] for data in val_metric.backup]
-    
-    fig = plt.figure(figsize=(8, 5), dpi=300)
-    # 绘制召回率的曲线
-    plt.axhline(y=1.0, color='r', linestyle='--')
-    plt.plot(train_recal_half, label='training half right')
-    plt.plot(train_recal_complete, label='training completely right')
-    plt.plot(valid_recal_half, label='validing half right')
-    plt.plot(valid_recal_complete, label='validing completely right')
-    # 添加图例
-    plt.legend()
-    plt.xlabel('Epochs')
-    plt.ylabel('Recall rate')
-    plt.title('Recall of predicted entities')
-    plt.savefig('NERResult/Recall.png')
-    
-    
-    eps = 1e-8
-    # 3 Precision rate, completeright
-    train_Precision_half = [(data[6]+eps)/(data[2]+eps) for data in train_metric.backup]
-    train_Precision_complete = [(data[5]+eps)/(data[2]+eps) for data in train_metric.backup]
-    valid_Precision_half = [(data[6]+eps)/(data[2]+eps) for data in val_metric.backup]
-    valid_Precision_complete = [(data[5]+eps)/(data[2]+eps) for data in val_metric.backup]
-    
-    fig = plt.figure(figsize=(8, 5), dpi=300)
-    # 绘制召回率的曲线
-    plt.axhline(y=1.0, color='r', linestyle='--')
-    plt.plot(train_Precision_half, label='training half right')
-    plt.plot(train_Precision_complete, label='training completely right')
-    plt.plot(valid_Precision_half, label='validing half right')
-    plt.plot(valid_Precision_complete, label='validing completely right')
-    # 添加图例
-    plt.legend()
-    plt.xlabel('Epochs')
-    plt.ylabel('Precision')
-    plt.title('precision of predicted entities')
-    plt.savefig('NERResult/Precision.png')
+            
+            
         
-    
 
 
         

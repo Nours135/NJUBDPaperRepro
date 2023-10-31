@@ -44,7 +44,7 @@ def send_mail(toaddres, content, title):
 
 
 class WordEmbeddingDataset(tud.Dataset):
-    folder = 'skipgram_corpus\\'
+    folder = 'skipgram_corpus/'
     def __init__(self, source, C, K):
         ''' source 可能的取值是 meaning, radical, pinyin，表示三种不同的素材
         '''
@@ -238,7 +238,7 @@ def train(model, LossCriterion, optimizer, dataiter, epochs, source):
             loss.backward()
             optimizer.step()
         print(f'epoch {e+1} finished')
-        torch.save(model.state_dict(), f'models\\skipgram_{source}_epoch{e+1}_{str(datetime.date.today())}.pth')  # 这里需要修改以下
+        torch.save(model.state_dict(), f'models/skipgram_{source}_epoch{e+1}_{str(datetime.date.today())}.pth')  # 这里需要修改以下
         if e%2 == 0: # 每两个epoc发一次邮件，将log信息传回
             mailtitle = f'skipgram_{source}_epoch{e+1}_log'
             with open(f'{source}_train.log', 'r', encoding='utf-8') as f:
@@ -283,7 +283,7 @@ def main():
 
         mod = input('输入载入继续训练的模型：')
         if mod != 'new':
-            model.load_state_dict(torch.load(f'models\\{mod}'))
+            model.load_state_dict(torch.load(f'models/{mod}'))
             model.eval()
             print(f'model {mod} loaded successful')
 
